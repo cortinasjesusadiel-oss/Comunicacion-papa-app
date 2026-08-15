@@ -40,6 +40,21 @@ jobs:
         pip install --upgrade pip
         pip install --upgrade Cython==0.29.33 buildozer
 
+    - name: Install Android SDK build-tools 33 y aceptar licencias
+      run: |
+        export ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+        cd $ANDROID_SDK_ROOT/cmdline-tools
+        curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q cmdline-tools.zip
+        mv cmdline-tools latest
+        SDKMANAGER=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager
+        yes | $SDKMANAGER --licenses --sdk_root=$ANDROID_SDK_ROOT
+        $SDKMANAGER --sdk_root=$ANDROID_SDK_ROOT \
+          "platform-tools" \
+          "platforms;android-33" \
+          "build-tools;33.0.0"
+
     - name: Build APK with Buildozer
       run: |
         buildozer -v android debug
