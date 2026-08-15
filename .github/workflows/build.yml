@@ -31,19 +31,21 @@ jobs:
             libswscale-dev \
             libavformat-dev \
             libavcodec-dev \
-            zlib1g-dev
+            zlib1g-dev \
+            unzip \
+            zip
 
-    - name: Install Buildozer and Cython
+    - name: Install Buildozer and dependencies
       run: |
         pip install --upgrade pip
-        pip install cython==0.29.36 buildozer==1.5.0
+        pip install --upgrade Cython==0.29.33 buildozer
 
-    - name: Build APK
+    - name: Build APK with Buildozer
       run: |
-        yes | buildozer -v android debug
+        buildozer -v android debug
 
-    - name: Upload APK
+    - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: package
+        name: app-debug
         path: bin/*.apk
