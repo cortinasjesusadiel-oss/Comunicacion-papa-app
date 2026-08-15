@@ -12,13 +12,17 @@ package.domain = org.jesus
 # (list) Source files to include (let it include python files)
 source.include_exts = py,png,jpg,kv,atlas
 
+# (str) Source directory where your app files reside
+source.dir = .
+
+# (str) Application versioning
+version = 1.0
+
 # (list) Application requirements
-# Aquí indicamos que tu app necesita Python y Kivy para funcionar en el móvil
 requirements = python3,kivy
 
 # (str) Supported orientations
 orientation = portrait
 
 [buildozer]
-# Log level (0 = error only, 1 = info, 2 = debug (with command output))
 log_level = 2
