@@ -12,6 +12,7 @@ android.permissions = INTERNET
 android.api = 33
 android.minapi = 21
 android.ndk = 25b
+p4a.branch = v2024.01.21
 
 [buildozer]
 log_level = 2
