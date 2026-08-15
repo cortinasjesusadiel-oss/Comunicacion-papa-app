@@ -9,10 +9,12 @@ requirements = python3,kivy
 orientation = portrait
 android.permissions = INTERNET
 
+android.api = 33
+android.minapi = 21
+android.ndk = 25b
+
 [buildozer]
 log_level = 2
 android.accept_sdk_license = True
-# Forzamos una versión que no requiere descarga externa
-android.sdk_build_tools_version = 30.0.3
-android.api = 30
-android.ndk = 23b
+android.skip_update = True
+android.sdk_path = /home/runner/.buildozer/android/platform/android-sdk
