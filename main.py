@@ -315,7 +315,10 @@ class Voz:
             @java_method('(I)V')
             def onInit(self, status):
                 if status == 0 and voz.tts is not None:
-                    voz.tts.setLanguage(Locale('es', 'CO'))
+                    resultado = voz.tts.setLanguage(Locale('es', 'CO'))
+                    if resultado < 0:
+                        # "es-CO" no está disponible en este motor de voz, usamos español genérico
+                        voz.tts.setLanguage(Locale('es'))
 
         @run_on_ui_thread
         def crear():
@@ -403,9 +406,18 @@ class MonitorBateria:
 monitor_bateria = MonitorBateria()
 
 
+FRASES_ESTADO = {
+    "disponible": "está libre, ¿quieres hablar con él? Dile: Chuchito, llámame.",
+    "trabajando": "está trabajando en este momento.",
+    "ocupado": "está ocupado, te va a llamar en cuanto pueda.",
+    "durmiendo": "está durmiendo, mejor no lo molestamos.",
+}
+
+
 def actualizar_estado(persona, nuevo):
     FAMILIARES[persona]["estado"] = nuevo
-    voz.decir(f"Papá, {persona.capitalize()} está {nuevo} ahora.")
+    frase = FRASES_ESTADO.get(nuevo, f"está {nuevo} ahora.")
+    voz.decir(f"Papá, {persona.capitalize()} {frase}")
 
 
 def responder_hora():
@@ -669,13 +681,8 @@ class VoiceEngine:
                 any(nombre in texto_lower for nombre in FAMILIARES):
             persona = identificar_familiar(texto_lower)
             estado_actual = FAMILIARES[persona]["estado"]
-            respuestas = {
-                "disponible": f"{persona.capitalize()} está disponible. ¿Quieres que te llame? Dime: Chuchito, llámame.",
-                "trabajando": f"{persona.capitalize()} está trabajando ahora.",
-                "ocupado": f"{persona.capitalize()} está ocupado en este momento.",
-                "durmiendo": f"{persona.capitalize()} está durmiendo, mejor no lo molestamos.",
-            }
-            voz.decir(respuestas.get(estado_actual, f"{persona.capitalize()} está {estado_actual}."))
+            frase = FRASES_ESTADO.get(estado_actual, f"está {estado_actual}.")
+            voz.decir(f"{persona.capitalize()} {frase}")
             Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
         else:
