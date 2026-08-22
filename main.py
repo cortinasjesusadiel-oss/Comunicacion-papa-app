@@ -64,6 +64,18 @@ ESTADOS_VALIDOS = {"disponible", "trabajando", "durmiendo", "ocupado"}
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
+_estado_callback = None  # se conecta a la etiqueta en pantalla cuando arranca la app
+
+
+def reportar_estado(texto):
+    """Muestra un mensaje en la pantalla de la app (y en el log) - para ver errores sin necesitar cable USB."""
+    print(texto)
+    if _estado_callback is not None:
+        try:
+            _estado_callback(texto)
+        except Exception:
+            pass
+
 
 def identificar_familiar(texto_lower):
     """Busca cuál familiar se menciona en el texto; si no menciona a nadie, usa el primero registrado."""
@@ -78,7 +90,7 @@ def enviar_telegram(chat_id, texto):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": chat_id, "text": texto}, timeout=15)
     except Exception as e:
-        print(f"Error enviando a Telegram: {e}")
+        reportar_estado(f"ERROR Telegram (mensaje): {e}")
 
 
 def enviar_audio_telegram(chat_id, ruta_archivo, caption=None):
@@ -93,7 +105,7 @@ def enviar_audio_telegram(chat_id, ruta_archivo, caption=None):
                 data["caption"] = caption
             requests.post(url, data=data, files={"audio": f}, timeout=30)
     except Exception as e:
-        print(f"Error enviando audio a Telegram: {e}")
+        reportar_estado(f"ERROR Telegram (audio): {e}")
 
 
 def enviar_menu_telegram(chat_id):
@@ -115,7 +127,7 @@ def enviar_menu_telegram(chat_id):
             "reply_markup": json.dumps(teclado)
         }, timeout=15)
     except Exception as e:
-        print(f"Error enviando menú a Telegram: {e}")
+        reportar_estado(f"ERROR Telegram (menu): {e}")
 
 
 def grabar_audio(duracion_segundos, callback):
@@ -147,7 +159,7 @@ def grabar_audio(duracion_segundos, callback):
             rec.start()
             estado["recorder"] = rec
         except Exception as e:
-            print(f"Error iniciando grabación: {e}")
+            reportar_estado(f"ERROR iniciando grabacion: {e}")
 
     iniciar()
 
@@ -162,7 +174,7 @@ def grabar_audio(duracion_segundos, callback):
                     rec.release()
                     exito = True
                 except Exception as e:
-                    print(f"Error deteniendo grabación: {e}")
+                    reportar_estado(f"ERROR deteniendo grabacion: {e}")
             callback(ruta if exito else None)
 
         parar()
@@ -266,7 +278,7 @@ class Radio:
                 self.mediaplayer.prepareAsync()
                 self.reproduciendo = True
             except Exception as e:
-                print(f"Error al reproducir radio: {e}")
+                reportar_estado(f"ERROR radio: {e}")
 
         hacer()
 
@@ -330,20 +342,28 @@ class Voz:
         crear()
 
     def decir(self, texto, reanudar_despues=True):
-        from android.runnable import run_on_ui_thread
-        from jnius import autoclass
+        try:
+            from android.runnable import run_on_ui_thread
+            from jnius import autoclass
 
-        TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
+            TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
 
-        if motor_activo is not None:
-            motor_activo.pausar()
+            if motor_activo is not None:
+                motor_activo.pausar()
 
-        @run_on_ui_thread
-        def hacer():
-            if self.tts is not None:
-                self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, None, "alerta_bateria")
+            @run_on_ui_thread
+            def hacer():
+                try:
+                    if self.tts is not None:
+                        self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, None, "alerta_bateria")
+                    else:
+                        reportar_estado("ERROR: el motor de voz aún no está listo")
+                except Exception as e:
+                    reportar_estado(f"ERROR al hablar (speak): {e}")
 
-        hacer()
+            hacer()
+        except Exception as e:
+            reportar_estado(f"ERROR en decir(): {e}")
 
         if not reanudar_despues:
             return
@@ -398,7 +418,7 @@ class MonitorBateria:
         try:
             porcentaje, cargando = obtener_estado_bateria()
         except Exception as e:
-            print(f"Error leyendo batería: {e}")
+            reportar_estado(f"ERROR bateria: {e}")
             return
 
         if porcentaje == -1:
@@ -478,7 +498,7 @@ class TelegramEscucha:
                     continue
                 Clock.schedule_once(lambda dt, p=persona, t=texto: self._procesar(p, t), 0)
         except Exception as e:
-            print(f"Error revisando Telegram: {e}")
+            reportar_estado(f"ERROR revisando Telegram: {e}")
 
     def _identificar_por_chat(self, chat_id):
         for persona, datos in FAMILIARES.items():
@@ -613,7 +633,7 @@ class VoiceEngine:
             try:
                 self.recognizer.startListening(intent)
             except Exception as e:
-                print(f"Error al iniciar escucha: {e}")
+                reportar_estado(f"ERROR iniciando escucha: {e}")
                 Clock.schedule_once(lambda dt: self._escuchar(), 1)
 
         self.on_status("Escuchando...")
@@ -624,13 +644,18 @@ class VoiceEngine:
 
     def hacer_pregunta(self, persona, texto_pregunta):
         """Llamado cuando un familiar manda una pregunta por Telegram: se la lee a papá y graba su respuesta."""
-        self.persona_pendiente = persona
-        self.pregunta_pendiente = texto_pregunta
-        self.on_status(f"Preguntando a tu papá de parte de {persona.capitalize()}: \"{texto_pregunta}\"")
-        texto_hablado = f"{persona.capitalize()} pregunta: {texto_pregunta}"
-        voz.decir(texto_hablado, reanudar_despues=False)
-        segundos_espera = 2 + len(texto_hablado.split()) * 0.45
-        Clock.schedule_once(lambda dt: self._grabar_mensaje(), segundos_espera)
+        try:
+            self.persona_pendiente = persona
+            self.pregunta_pendiente = texto_pregunta
+            self.on_status(f"Preguntando a tu papá de parte de {persona.capitalize()}: \"{texto_pregunta}\"")
+            texto_hablado = f"{persona.capitalize()} pregunta: {texto_pregunta}"
+            voz.decir(texto_hablado, reanudar_despues=False)
+            segundos_espera = 2 + len(texto_hablado.split()) * 0.45
+            Clock.schedule_once(lambda dt: self._grabar_mensaje(), segundos_espera)
+        except Exception as e:
+            reportar_estado(f"ERROR en hacer_pregunta: {e}")
+            self.pausado = False
+            Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
     def _grabar_mensaje(self, duracion=10):
         self.on_status("Grabando tu mensaje, habla ahora...")
@@ -763,6 +788,9 @@ class ControlAsistenteApp(App):
         )
         self.layout.add_widget(self.lbl_ultimo)
 
+        global _estado_callback
+        _estado_callback = self._on_status
+
         Clock.schedule_once(lambda dt: self._pedir_permisos(), 1)
         Clock.schedule_interval(monitor_bateria.revisar, BATTERY_CHECK_SEGUNDOS)
         Clock.schedule_interval(recordar_agua, RECORDATORIO_AGUA_SEGUNDOS)
@@ -780,7 +808,7 @@ class ControlAsistenteApp(App):
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             PythonActivity.mActivity.moveTaskToBack(True)
         except Exception as e:
-            print(f"Error minimizando: {e}")
+            reportar_estado(f"ERROR minimizando: {e}")
 
     def _pedir_permisos(self):
         from android.permissions import request_permissions, Permission
