@@ -1,4 +1,5 @@
 import threading
+import time
 import requests
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
@@ -32,12 +33,76 @@ WAKE_WORD = "chuchito"
 def enviar_telegram(texto):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": f"Tu papá dice:\n\n\"{texto}\""
-        }, timeout=15)
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": texto}, timeout=15)
     except Exception as e:
         print(f"Error enviando a Telegram: {e}")
+
+
+def enviar_audio_telegram(ruta_archivo, caption=None):
+    """Sube el audio grabado a Telegram como archivo de audio reproducible."""
+    if not ruta_archivo:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
+        with open(ruta_archivo, 'rb') as f:
+            data = {"chat_id": TELEGRAM_CHAT_ID}
+            if caption:
+                data["caption"] = caption
+            requests.post(url, data=data, files={"audio": f}, timeout=30)
+    except Exception as e:
+        print(f"Error enviando audio a Telegram: {e}")
+
+
+def grabar_audio(duracion_segundos, callback):
+    """Graba el micrófono por 'duracion_segundos' y llama callback(ruta_o_None) al terminar."""
+    from android.runnable import run_on_ui_thread
+    from jnius import autoclass
+
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    MediaRecorder = autoclass('android.media.MediaRecorder')
+    AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
+    OutputFormat = autoclass('android.media.MediaRecorder$OutputFormat')
+    AudioEncoder = autoclass('android.media.MediaRecorder$AudioEncoder')
+
+    activity = PythonActivity.mActivity
+    cache_dir = activity.getCacheDir().getAbsolutePath()
+    ruta = f"{cache_dir}/mensaje_{int(time.time())}.m4a"
+
+    estado = {"recorder": None}
+
+    @run_on_ui_thread
+    def iniciar():
+        try:
+            rec = MediaRecorder()
+            rec.setAudioSource(AudioSource.MIC)
+            rec.setOutputFormat(OutputFormat.MPEG_4)
+            rec.setAudioEncoder(AudioEncoder.AAC)
+            rec.setOutputFile(ruta)
+            rec.prepare()
+            rec.start()
+            estado["recorder"] = rec
+        except Exception as e:
+            print(f"Error iniciando grabación: {e}")
+
+    iniciar()
+
+    def detener(dt):
+        @run_on_ui_thread
+        def parar():
+            rec = estado.get("recorder")
+            exito = False
+            if rec is not None:
+                try:
+                    rec.stop()
+                    rec.release()
+                    exito = True
+                except Exception as e:
+                    print(f"Error deteniendo grabación: {e}")
+            callback(ruta if exito else None)
+
+        parar()
+
+    Clock.schedule_once(detener, duracion_segundos)
 
 
 def lanzar_llamada_whatsapp(nombre_contacto, video=True):
@@ -270,6 +335,50 @@ class MonitorBateria:
 
 monitor_bateria = MonitorBateria()
 
+ESTADOS_VALIDOS = {"disponible", "trabajando", "durmiendo", "ocupado"}
+estado_hijo = "disponible"
+
+
+def actualizar_estado(nuevo):
+    global estado_hijo
+    estado_hijo = nuevo
+    voz.decir(f"Papá, tu hijo está {nuevo} ahora.")
+
+
+class TelegramEscucha:
+    """Revisa cada pocos segundos si el hijo mandó un mensaje al bot desde su Telegram."""
+
+    def __init__(self, motor):
+        self.motor = motor
+        self.offset = 0
+
+    def revisar(self, dt=None):
+        threading.Thread(target=self._revisar_en_hilo, daemon=True).start()
+
+    def _revisar_en_hilo(self):
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+            params = {"offset": self.offset + 1, "timeout": 0}
+            resp = requests.get(url, params=params, timeout=15)
+            data = resp.json()
+            for update in data.get("result", []):
+                self.offset = update["update_id"]
+                mensaje = update.get("message", {})
+                chat_id = str(mensaje.get("chat", {}).get("id", ""))
+                texto = (mensaje.get("text") or "").strip()
+                if chat_id != str(TELEGRAM_CHAT_ID) or not texto:
+                    continue
+                Clock.schedule_once(lambda dt, t=texto: self._procesar(t), 0)
+        except Exception as e:
+            print(f"Error revisando Telegram: {e}")
+
+    def _procesar(self, texto):
+        texto_lower = texto.lower().strip()
+        if texto_lower in ESTADOS_VALIDOS:
+            actualizar_estado(texto_lower)
+        else:
+            self.motor.hacer_pregunta(texto)
+
 
 class VoiceEngine:
     """Maneja el ciclo de escucha en ráfagas cortas usando el reconocedor de voz de Android."""
@@ -277,7 +386,7 @@ class VoiceEngine:
     def __init__(self, on_status, on_transcript):
         self.on_status = on_status
         self.on_transcript = on_transcript
-        self.modo_dictado = False
+        self.pregunta_pendiente = None
         self._setup()
 
     def _setup(self):
@@ -341,7 +450,7 @@ class VoiceEngine:
 
         crear()
 
-    def _escuchar(self, segundos_extra=False):
+    def _escuchar(self):
         from android.runnable import run_on_ui_thread
         from jnius import autoclass
 
@@ -355,32 +464,48 @@ class VoiceEngine:
                              RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-CO")
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, False)
-            if segundos_extra:
-                intent.putExtra("android.speech.extra.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS", 4000)
-                intent.putExtra("android.speech.extra.SPEECH_INPUT_MINIMUM_LENGTH_MILLIS", 2000)
             try:
                 self.recognizer.startListening(intent)
             except Exception as e:
                 print(f"Error al iniciar escucha: {e}")
                 Clock.schedule_once(lambda dt: self._escuchar(), 1)
 
-        self.on_status("Escuchando..." if not self.modo_dictado else "Escuchando lo que dices...")
+        self.on_status("Escuchando...")
         hacer()
 
     def _reintentar(self):
-        Clock.schedule_once(lambda dt: self._escuchar(self.modo_dictado), 0.6)
+        Clock.schedule_once(lambda dt: self._escuchar(), 0.6)
+
+    def hacer_pregunta(self, texto_pregunta):
+        """Llamado cuando el hijo manda una pregunta por Telegram: se la lee a papá y graba su respuesta."""
+        self.pregunta_pendiente = texto_pregunta
+        self.on_status(f"Preguntando a tu papá: \"{texto_pregunta}\"")
+        voz.decir(f"Tu hijo pregunta: {texto_pregunta}")
+        segundos_espera = 3 + len(texto_pregunta.split()) * 0.4
+        Clock.schedule_once(lambda dt: self._grabar_mensaje(), segundos_espera)
+
+    def _grabar_mensaje(self, duracion=10):
+        self.on_status("Grabando tu mensaje, habla ahora...")
+        grabar_audio(duracion, self._al_terminar_grabacion)
+
+    def _al_terminar_grabacion(self, ruta_archivo):
+        if ruta_archivo:
+            if self.pregunta_pendiente:
+                caption = f"Respuesta de tu papá a: \"{self.pregunta_pendiente}\""
+            else:
+                caption = "Mensaje de voz de tu papá"
+            self.on_status("Mensaje de voz enviado")
+            threading.Thread(
+                target=enviar_audio_telegram, args=(ruta_archivo, caption), daemon=True
+            ).start()
+        else:
+            self.on_status("No se pudo grabar el mensaje, intenta de nuevo")
+
+        self.pregunta_pendiente = None
+        Clock.schedule_once(lambda dt: self._escuchar(), 1.5)
 
     def _procesar_resultado(self, texto):
         texto_lower = texto.lower().strip()
-
-        if self.modo_dictado:
-            self.modo_dictado = False
-            if texto_lower:
-                self.on_transcript(texto)
-                self.on_status(f"Mensaje enviado: \"{texto}\"")
-                threading.Thread(target=enviar_telegram, args=(texto,), daemon=True).start()
-            Clock.schedule_once(lambda dt: self._escuchar(), 1.5)
-            return
 
         if WAKE_WORD not in texto_lower:
             Clock.schedule_once(lambda dt: self._escuchar(), 0.4)
@@ -398,9 +523,8 @@ class VoiceEngine:
 
         # --- Mensaje de voz ---
         elif "habl" in texto_lower:
-            self.modo_dictado = True
-            self.on_status("Dime tu mensaje, te escucho...")
-            Clock.schedule_once(lambda dt: self._escuchar(True), 0.3)
+            self.on_status("Grabando tu mensaje, habla ahora...")
+            Clock.schedule_once(lambda dt: self._grabar_mensaje(), 0.5)
 
         # --- Apagar radio ---
         elif "radio" in texto_lower and any(p in texto_lower for p in ["apaga", "detén", "detener", "para"]):
@@ -428,6 +552,11 @@ class VoiceEngine:
                     break
             self.on_status(f"Poniendo la radio: {emisora_pedida or radio.emisora_actual}...")
             radio.reproducir(emisora_pedida)
+            Clock.schedule_once(lambda dt: self._escuchar(), 2)
+
+        # --- Preguntar por el estado del hijo ---
+        elif "hijo" in texto_lower:
+            voz.decir(f"Tu hijo está {estado_hijo}.")
             Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
         else:
@@ -479,6 +608,8 @@ class ControlAsistenteApp(App):
             on_status=self._on_status,
             on_transcript=self._on_transcript
         )
+        self.telegram_escucha = TelegramEscucha(self.motor)
+        Clock.schedule_interval(self.telegram_escucha.revisar, 8)
 
     @mainthread
     def _on_status(self, texto):
