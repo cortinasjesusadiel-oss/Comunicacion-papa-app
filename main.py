@@ -298,7 +298,6 @@ class Voz:
     def __init__(self):
         self.tts = None
         self._listener = None
-        self._listener_fin = None
         self._inicializar()
 
     def _inicializar(self):
@@ -323,20 +322,10 @@ class Voz:
                         # "es-CO" no está disponible en este motor de voz, usamos español genérico
                         voz.tts.setLanguage(Locale('es'))
 
-        class OnFin(PythonJavaClass):
-            __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnUtteranceCompletedListener']
-            __javacontext__ = 'app'
-
-            @java_method('(Ljava/lang/String;)V')
-            def onUtteranceCompleted(self, utterance_id):
-                Clock.schedule_once(lambda dt: _reanudar_escucha(), 0.3)
-
         @run_on_ui_thread
         def crear():
             self._listener = OnInit()
             self.tts = TextToSpeech(PythonActivity.mActivity, self._listener)
-            self._listener_fin = OnFin()
-            self.tts.setOnUtteranceCompletedListener(self._listener_fin)
 
         crear()
 
@@ -355,6 +344,12 @@ class Voz:
                 self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, None, "alerta_bateria")
 
         hacer()
+
+        # No dependemos de que Android avise cuando termina de hablar (esa función
+        # no siempre se dispara en celulares nuevos). Calculamos un tiempo prudente
+        # según lo largo del texto, y reanudamos la escucha nosotros mismos.
+        duracion_estimada = 1.5 + len(texto.split()) * 0.45
+        Clock.schedule_once(lambda dt: _reanudar_escucha(), duracion_estimada)
 
 
 voz = Voz()
