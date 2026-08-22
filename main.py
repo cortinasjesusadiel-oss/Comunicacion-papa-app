@@ -53,7 +53,11 @@ RECORDATORIOS_AGUA = [
     "Papi, recuerda tomar tu agüita.",
     "Oye papi, un vasito de agua te va a caer bien.",
 ]
+
+IDLE_MINIMIZAR_SEGUNDOS = 4 * 60        # si no dice "Chuchito" en 4 min, se minimiza
 # =========================================
+
+ultima_interaccion = time.time()
 
 WAKE_WORD = "chuchito"                 # nombre del asistente, así lo activa papá
 ESTADOS_VALIDOS = {"disponible", "trabajando", "durmiendo", "ocupado"}
@@ -605,6 +609,9 @@ class VoiceEngine:
             Clock.schedule_once(lambda dt: self._escuchar(), 0.4)
             return
 
+        global ultima_interaccion
+        ultima_interaccion = time.time()
+
         # --- Llamar ---
         if "llam" in texto_lower:
             persona = identificar_familiar(texto_lower)
@@ -706,11 +713,41 @@ class ControlAsistenteApp(App):
         )
         self.layout.add_widget(self.lbl_ultimo)
 
-        Clock.schedule_once(lambda dt: self._iniciar_motor(), 1)
+        Clock.schedule_once(lambda dt: self._pedir_permisos(), 1)
         Clock.schedule_interval(monitor_bateria.revisar, BATTERY_CHECK_SEGUNDOS)
         Clock.schedule_interval(recordar_agua, RECORDATORIO_AGUA_SEGUNDOS)
+        Clock.schedule_interval(self._revisar_inactividad, 30)
 
         return self.layout
+
+    def _revisar_inactividad(self, dt=None):
+        if time.time() - ultima_interaccion > IDLE_MINIMIZAR_SEGUNDOS:
+            self._minimizar()
+
+    def _minimizar(self):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            PythonActivity.mActivity.moveTaskToBack(True)
+        except Exception as e:
+            print(f"Error minimizando: {e}")
+
+    def _pedir_permisos(self):
+        from android.permissions import request_permissions, Permission
+        self._on_status("Pidiendo permisos de micrófono y contactos...")
+        request_permissions(
+            [Permission.RECORD_AUDIO, Permission.READ_CONTACTS],
+            self._al_responder_permisos
+        )
+
+    def _al_responder_permisos(self, permisos, resultados):
+        if resultados and all(resultados):
+            self._iniciar_motor()
+        else:
+            self._on_status(
+                "Faltan permisos. Ve a Ajustes > Apps > Asistente de Papá > Permisos, "
+                "y activa Micrófono y Contactos a mano."
+            )
 
     def _actualizar_fondo(self, *args):
         self.rect.size = self.layout.size
