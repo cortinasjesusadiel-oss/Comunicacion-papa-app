@@ -289,6 +289,8 @@ class Radio:
 
 radio = Radio()
 
+motor_activo = None  # referencia al VoiceEngine, se asigna cuando arranca
+
 
 class Voz:
     """Text-to-speech para que la app le hable a tu papá en voz alta."""
@@ -296,6 +298,7 @@ class Voz:
     def __init__(self):
         self.tts = None
         self._listener = None
+        self._listener_fin = None
         self._inicializar()
 
     def _inicializar(self):
@@ -320,10 +323,20 @@ class Voz:
                         # "es-CO" no está disponible en este motor de voz, usamos español genérico
                         voz.tts.setLanguage(Locale('es'))
 
+        class OnFin(PythonJavaClass):
+            __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnUtteranceCompletedListener']
+            __javacontext__ = 'app'
+
+            @java_method('(Ljava/lang/String;)V')
+            def onUtteranceCompleted(self, utterance_id):
+                Clock.schedule_once(lambda dt: _reanudar_escucha(), 0.3)
+
         @run_on_ui_thread
         def crear():
             self._listener = OnInit()
             self.tts = TextToSpeech(PythonActivity.mActivity, self._listener)
+            self._listener_fin = OnFin()
+            self.tts.setOnUtteranceCompletedListener(self._listener_fin)
 
         crear()
 
@@ -332,6 +345,9 @@ class Voz:
         from jnius import autoclass
 
         TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
+
+        if motor_activo is not None:
+            motor_activo.pausar()
 
         @run_on_ui_thread
         def hacer():
@@ -342,6 +358,11 @@ class Voz:
 
 
 voz = Voz()
+
+
+def _reanudar_escucha():
+    if motor_activo is not None:
+        motor_activo.reanudar()
 
 
 def obtener_estado_bateria():
@@ -492,7 +513,26 @@ class VoiceEngine:
         self.on_transcript = on_transcript
         self.pregunta_pendiente = None
         self.persona_pendiente = None
+        self.pausado = False
         self._setup()
+
+    def pausar(self):
+        """Detiene el micrófono para que no compita con la voz cuando la app le habla a papá."""
+        self.pausado = True
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def hacer():
+            try:
+                self.recognizer.cancel()
+            except Exception:
+                pass
+
+        hacer()
+
+    def reanudar(self):
+        self.pausado = False
+        self._escuchar()
 
     def _setup(self):
         from android.runnable import run_on_ui_thread
@@ -556,6 +596,9 @@ class VoiceEngine:
         crear()
 
     def _escuchar(self):
+        if self.pausado:
+            return
+
         from android.runnable import run_on_ui_thread
         from jnius import autoclass
 
@@ -761,10 +804,12 @@ class ControlAsistenteApp(App):
         self.rect.pos = self.layout.pos
 
     def _iniciar_motor(self):
+        global motor_activo
         self.motor = VoiceEngine(
             on_status=self._on_status,
             on_transcript=self._on_transcript
         )
+        motor_activo = self.motor
         self.telegram_escucha = TelegramEscucha(self.motor)
         Clock.schedule_interval(self.telegram_escucha.revisar, 8)
 
