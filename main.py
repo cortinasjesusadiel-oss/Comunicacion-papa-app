@@ -329,7 +329,7 @@ class Voz:
 
         crear()
 
-    def decir(self, texto):
+    def decir(self, texto, reanudar_despues=True):
         from android.runnable import run_on_ui_thread
         from jnius import autoclass
 
@@ -344,6 +344,9 @@ class Voz:
                 self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, None, "alerta_bateria")
 
         hacer()
+
+        if not reanudar_despues:
+            return
 
         # No dependemos de que Android avise cuando termina de hablar (esa función
         # no siempre se dispara en celulares nuevos). Calculamos un tiempo prudente
@@ -624,8 +627,9 @@ class VoiceEngine:
         self.persona_pendiente = persona
         self.pregunta_pendiente = texto_pregunta
         self.on_status(f"Preguntando a tu papá de parte de {persona.capitalize()}: \"{texto_pregunta}\"")
-        voz.decir(f"{persona.capitalize()} pregunta: {texto_pregunta}")
-        segundos_espera = 3 + len(texto_pregunta.split()) * 0.4
+        texto_hablado = f"{persona.capitalize()} pregunta: {texto_pregunta}"
+        voz.decir(texto_hablado, reanudar_despues=False)
+        segundos_espera = 2 + len(texto_hablado.split()) * 0.45
         Clock.schedule_once(lambda dt: self._grabar_mensaje(), segundos_espera)
 
     def _grabar_mensaje(self, duracion=10):
@@ -633,6 +637,7 @@ class VoiceEngine:
         grabar_audio(duracion, self._al_terminar_grabacion)
 
     def _al_terminar_grabacion(self, ruta_archivo):
+        self.pausado = False
         persona = self.persona_pendiente or next(iter(FAMILIARES))
         chat_id = FAMILIARES[persona]["telegram_chat_id"]
 
