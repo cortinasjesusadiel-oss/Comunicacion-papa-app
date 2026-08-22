@@ -347,6 +347,7 @@ class Voz:
             from jnius import autoclass
 
             TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
+            Bundle = autoclass('android.os.Bundle')
 
             if motor_activo is not None:
                 motor_activo.pausar()
@@ -355,7 +356,7 @@ class Voz:
             def hacer():
                 try:
                     if self.tts is not None:
-                        self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, None, "alerta_bateria")
+                        self.tts.speak(texto, TextToSpeech.QUEUE_FLUSH, Bundle(), "alerta_bateria")
                     else:
                         reportar_estado("ERROR: el motor de voz aún no está listo")
                 except Exception as e:
