@@ -5,9 +5,9 @@ package.domain = org.jesus
 source.include_exts = py,png,jpg,kv,atlas
 source.dir = .
 version = 1.0
-requirements = python3,kivy
+requirements = python3,kivy,pyjnius,requests
 orientation = portrait
-android.permissions = INTERNET
+android.permissions = INTERNET,RECORD_AUDIO,READ_CONTACTS,MODIFY_AUDIO_SETTINGS,WAKE_LOCK
 
 android.api = 33
 android.minapi = 21
