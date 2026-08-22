@@ -1,6 +1,9 @@
 import threading
 import time
+import json
+import random
 import requests
+from datetime import datetime
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
@@ -9,8 +12,26 @@ from kivy.graphics import Color, Rectangle
 
 # ============ CONFIGURACION ============
 TELEGRAM_BOT_TOKEN = "7661276868:AAFrh_0DBhp41Tneh653xBurBKZ3qZau0nI"
-TELEGRAM_CHAT_ID = "7284263338"
-NOMBRE_CONTACTO = "Chuchito"       # Debe coincidir EXACTO con el nombre guardado en Contactos
+
+# Un registro por cada familiar que quiera comunicarse con papá.
+# - La CLAVE (ej. "chuchito", "maria") es la palabra que tu papá dice para referirse a esa persona.
+# - "telegram_chat_id": esa persona debe escribirle una vez a @userinfobot en SU PROPIO Telegram
+#   para conseguir su Id, y ponerlo aquí.
+# - "nombre_contacto_whatsapp": debe coincidir EXACTO con el nombre guardado en los Contactos
+#   del celular de papá (para poder lanzar la videollamada de WhatsApp).
+FAMILIARES = {
+    "chuchito": {
+        "telegram_chat_id": "7284263338",
+        "nombre_contacto_whatsapp": "Chuchito",
+        "estado": "disponible",
+    },
+    # "maria": {
+    #     "telegram_chat_id": "ID_DE_MARIA_AQUI",
+    #     "nombre_contacto_whatsapp": "Maria",
+    #     "estado": "disponible",
+    # },
+}
+
 TIPO_LLAMADA = "video"             # "video" o "audio"
 
 # Emisoras disponibles por voz. Agrega mas copiando el mismo formato.
@@ -25,32 +46,72 @@ EMISORA_POR_DEFECTO = "guasca"
 
 BATTERY_UMBRAL = 15                    # % de batería para avisar
 BATTERY_CHECK_SEGUNDOS = 300           # cada cuánto revisa (5 minutos)
+
+RECORDATORIO_AGUA_SEGUNDOS = 3 * 60 * 60   # cada 3 horas
+RECORDATORIOS_AGUA = [
+    "Papi, no olvides tomar agua.",
+    "Papi, recuerda tomar tu agüita.",
+    "Oye papi, un vasito de agua te va a caer bien.",
+]
 # =========================================
 
-WAKE_WORD = "chuchito"
+WAKE_WORD = "chuchito"                 # nombre del asistente, así lo activa papá
+ESTADOS_VALIDOS = {"disponible", "trabajando", "durmiendo", "ocupado"}
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 
-def enviar_telegram(texto):
+def identificar_familiar(texto_lower):
+    """Busca cuál familiar se menciona en el texto; si no menciona a nadie, usa el primero registrado."""
+    for clave in FAMILIARES:
+        if clave in texto_lower:
+            return clave
+    return next(iter(FAMILIARES))
+
+
+def enviar_telegram(chat_id, texto):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": texto}, timeout=15)
+        requests.post(url, data={"chat_id": chat_id, "text": texto}, timeout=15)
     except Exception as e:
         print(f"Error enviando a Telegram: {e}")
 
 
-def enviar_audio_telegram(ruta_archivo, caption=None):
+def enviar_audio_telegram(chat_id, ruta_archivo, caption=None):
     """Sube el audio grabado a Telegram como archivo de audio reproducible."""
     if not ruta_archivo:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
         with open(ruta_archivo, 'rb') as f:
-            data = {"chat_id": TELEGRAM_CHAT_ID}
+            data = {"chat_id": chat_id}
             if caption:
                 data["caption"] = caption
             requests.post(url, data=data, files={"audio": f}, timeout=30)
     except Exception as e:
         print(f"Error enviando audio a Telegram: {e}")
+
+
+def enviar_menu_telegram(chat_id):
+    """Manda los botones táctiles al chat de Telegram de un familiar."""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        teclado = {
+            "keyboard": [
+                ["Disponible", "Trabajando"],
+                ["Ocupado", "Durmiendo"],
+                ["¿Cómo estás, papi?"]
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True
+        }
+        requests.post(url, data={
+            "chat_id": chat_id,
+            "text": "Toca un botón para avisarle a tu papá cómo estás, o pregúntale cómo está él:",
+            "reply_markup": json.dumps(teclado)
+        }, timeout=15)
+    except Exception as e:
+        print(f"Error enviando menú a Telegram: {e}")
 
 
 def grabar_audio(duracion_segundos, callback):
@@ -302,7 +363,7 @@ def obtener_estado_bateria():
 
 
 class MonitorBateria:
-    """Revisa la batería periódicamente y avisa por voz + Telegram si está baja."""
+    """Revisa la batería periódicamente y avisa por voz + Telegram (a todos los familiares) si está baja."""
 
     def __init__(self):
         self.ya_avisado_telegram = False
@@ -325,28 +386,37 @@ class MonitorBateria:
                   f"Por favor conéctalo al cargador.")
 
         if not self.ya_avisado_telegram:
-            threading.Thread(
-                target=enviar_telegram,
-                args=(f"[AVISO] La batería del celular de tu papá está en {porcentaje}% y no se está cargando.",),
-                daemon=True
-            ).start()
+            for datos in FAMILIARES.values():
+                threading.Thread(
+                    target=enviar_telegram,
+                    args=(datos["telegram_chat_id"],
+                          f"[AVISO] La batería del celular de tu papá está en {porcentaje}% y no se está cargando."),
+                    daemon=True
+                ).start()
             self.ya_avisado_telegram = True
 
 
 monitor_bateria = MonitorBateria()
 
-ESTADOS_VALIDOS = {"disponible", "trabajando", "durmiendo", "ocupado"}
-estado_hijo = "disponible"
+
+def actualizar_estado(persona, nuevo):
+    FAMILIARES[persona]["estado"] = nuevo
+    voz.decir(f"Papá, {persona.capitalize()} está {nuevo} ahora.")
 
 
-def actualizar_estado(nuevo):
-    global estado_hijo
-    estado_hijo = nuevo
-    voz.decir(f"Papá, tu hijo está {nuevo} ahora.")
+def responder_hora():
+    ahora = datetime.now()
+    mes = MESES[ahora.month - 1]
+    voz.decir(f"Son las {ahora.hour} horas con {ahora.minute} minutos, "
+              f"del día {ahora.day} de {mes} del año {ahora.year}.")
+
+
+def recordar_agua(dt=None):
+    voz.decir(random.choice(RECORDATORIOS_AGUA))
 
 
 class TelegramEscucha:
-    """Revisa cada pocos segundos si el hijo mandó un mensaje al bot desde su Telegram."""
+    """Revisa cada pocos segundos si algún familiar mandó un mensaje al bot desde su Telegram."""
 
     def __init__(self, motor):
         self.motor = motor
@@ -366,18 +436,36 @@ class TelegramEscucha:
                 mensaje = update.get("message", {})
                 chat_id = str(mensaje.get("chat", {}).get("id", ""))
                 texto = (mensaje.get("text") or "").strip()
-                if chat_id != str(TELEGRAM_CHAT_ID) or not texto:
+                if not texto:
                     continue
-                Clock.schedule_once(lambda dt, t=texto: self._procesar(t), 0)
+                persona = self._identificar_por_chat(chat_id)
+                if persona is None:
+                    continue
+                Clock.schedule_once(lambda dt, p=persona, t=texto: self._procesar(p, t), 0)
         except Exception as e:
             print(f"Error revisando Telegram: {e}")
 
-    def _procesar(self, texto):
+    def _identificar_por_chat(self, chat_id):
+        for persona, datos in FAMILIARES.items():
+            if str(datos["telegram_chat_id"]) == chat_id:
+                return persona
+        return None
+
+    def _procesar(self, persona, texto):
         texto_lower = texto.lower().strip()
-        if texto_lower in ESTADOS_VALIDOS:
-            actualizar_estado(texto_lower)
+
+        if texto_lower in ("/start", "/menu", "menu"):
+            chat_id = FAMILIARES[persona]["telegram_chat_id"]
+            threading.Thread(target=enviar_menu_telegram, args=(chat_id,), daemon=True).start()
+
+        elif texto_lower in ESTADOS_VALIDOS:
+            actualizar_estado(persona, texto_lower)
+
+        elif "papi" in texto_lower and ("como" in texto_lower or "cómo" in texto_lower):
+            self.motor.hacer_pregunta(persona, "¿Cómo estás, papi?")
+
         else:
-            self.motor.hacer_pregunta(texto)
+            self.motor.hacer_pregunta(persona, texto)
 
 
 class VoiceEngine:
@@ -387,6 +475,7 @@ class VoiceEngine:
         self.on_status = on_status
         self.on_transcript = on_transcript
         self.pregunta_pendiente = None
+        self.persona_pendiente = None
         self._setup()
 
     def _setup(self):
@@ -476,11 +565,12 @@ class VoiceEngine:
     def _reintentar(self):
         Clock.schedule_once(lambda dt: self._escuchar(), 0.6)
 
-    def hacer_pregunta(self, texto_pregunta):
-        """Llamado cuando el hijo manda una pregunta por Telegram: se la lee a papá y graba su respuesta."""
+    def hacer_pregunta(self, persona, texto_pregunta):
+        """Llamado cuando un familiar manda una pregunta por Telegram: se la lee a papá y graba su respuesta."""
+        self.persona_pendiente = persona
         self.pregunta_pendiente = texto_pregunta
-        self.on_status(f"Preguntando a tu papá: \"{texto_pregunta}\"")
-        voz.decir(f"Tu hijo pregunta: {texto_pregunta}")
+        self.on_status(f"Preguntando a tu papá de parte de {persona.capitalize()}: \"{texto_pregunta}\"")
+        voz.decir(f"{persona.capitalize()} pregunta: {texto_pregunta}")
         segundos_espera = 3 + len(texto_pregunta.split()) * 0.4
         Clock.schedule_once(lambda dt: self._grabar_mensaje(), segundos_espera)
 
@@ -489,6 +579,9 @@ class VoiceEngine:
         grabar_audio(duracion, self._al_terminar_grabacion)
 
     def _al_terminar_grabacion(self, ruta_archivo):
+        persona = self.persona_pendiente or next(iter(FAMILIARES))
+        chat_id = FAMILIARES[persona]["telegram_chat_id"]
+
         if ruta_archivo:
             if self.pregunta_pendiente:
                 caption = f"Respuesta de tu papá a: \"{self.pregunta_pendiente}\""
@@ -496,12 +589,13 @@ class VoiceEngine:
                 caption = "Mensaje de voz de tu papá"
             self.on_status("Mensaje de voz enviado")
             threading.Thread(
-                target=enviar_audio_telegram, args=(ruta_archivo, caption), daemon=True
+                target=enviar_audio_telegram, args=(chat_id, ruta_archivo, caption), daemon=True
             ).start()
         else:
             self.on_status("No se pudo grabar el mensaje, intenta de nuevo")
 
         self.pregunta_pendiente = None
+        self.persona_pendiente = None
         Clock.schedule_once(lambda dt: self._escuchar(), 1.5)
 
     def _procesar_resultado(self, texto):
@@ -513,17 +607,21 @@ class VoiceEngine:
 
         # --- Llamar ---
         if "llam" in texto_lower:
-            self.on_status(f"Llamando por WhatsApp ({TIPO_LLAMADA})...")
+            persona = identificar_familiar(texto_lower)
+            datos = FAMILIARES[persona]
+            self.on_status(f"Llamando a {persona.capitalize()} por WhatsApp ({TIPO_LLAMADA})...")
             threading.Thread(
                 target=lanzar_llamada_whatsapp,
-                args=(NOMBRE_CONTACTO, TIPO_LLAMADA == "video"),
+                args=(datos["nombre_contacto_whatsapp"], TIPO_LLAMADA == "video"),
                 daemon=True
             ).start()
             Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
         # --- Mensaje de voz ---
         elif "habl" in texto_lower:
-            self.on_status("Grabando tu mensaje, habla ahora...")
+            persona = identificar_familiar(texto_lower)
+            self.persona_pendiente = persona
+            self.on_status(f"Grabando tu mensaje para {persona.capitalize()}, habla ahora...")
             Clock.schedule_once(lambda dt: self._grabar_mensaje(), 0.5)
 
         # --- Apagar radio ---
@@ -554,9 +652,23 @@ class VoiceEngine:
             radio.reproducir(emisora_pedida)
             Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
-        # --- Preguntar por el estado del hijo ---
-        elif "hijo" in texto_lower:
-            voz.decir(f"Tu hijo está {estado_hijo}.")
+        # --- Qué hora es ---
+        elif "hora" in texto_lower.split() or "horas" in texto_lower.split():
+            responder_hora()
+            Clock.schedule_once(lambda dt: self._escuchar(), 2)
+
+        # --- Preguntar por el estado de un familiar ---
+        elif any(p in texto_lower for p in ["hijo", "hija", "estará", "haciendo"]) or \
+                any(nombre in texto_lower for nombre in FAMILIARES):
+            persona = identificar_familiar(texto_lower)
+            estado_actual = FAMILIARES[persona]["estado"]
+            respuestas = {
+                "disponible": f"{persona.capitalize()} está disponible. ¿Quieres que te llame? Dime: Chuchito, llámame.",
+                "trabajando": f"{persona.capitalize()} está trabajando ahora.",
+                "ocupado": f"{persona.capitalize()} está ocupado en este momento.",
+                "durmiendo": f"{persona.capitalize()} está durmiendo, mejor no lo molestamos.",
+            }
+            voz.decir(respuestas.get(estado_actual, f"{persona.capitalize()} está {estado_actual}."))
             Clock.schedule_once(lambda dt: self._escuchar(), 2)
 
         else:
@@ -596,6 +708,7 @@ class ControlAsistenteApp(App):
 
         Clock.schedule_once(lambda dt: self._iniciar_motor(), 1)
         Clock.schedule_interval(monitor_bateria.revisar, BATTERY_CHECK_SEGUNDOS)
+        Clock.schedule_interval(recordar_agua, RECORDATORIO_AGUA_SEGUNDOS)
 
         return self.layout
 
@@ -610,6 +723,11 @@ class ControlAsistenteApp(App):
         )
         self.telegram_escucha = TelegramEscucha(self.motor)
         Clock.schedule_interval(self.telegram_escucha.revisar, 8)
+
+        for datos in FAMILIARES.values():
+            threading.Thread(
+                target=enviar_menu_telegram, args=(datos["telegram_chat_id"],), daemon=True
+            ).start()
 
     @mainthread
     def _on_status(self, texto):
